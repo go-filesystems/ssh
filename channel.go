@@ -231,13 +231,19 @@ type channel struct {
 // writePacket sends a packet. If the packet is a channel close, it updates
 // sentClose. This method takes the lock c.writeMu.
 func (ch *channel) writePacket(packet []byte) error {
+	return ch.writePacketWith(packet, ch.mux.conn.writePacket)
+}
+
+// writePacketWith is writePacket through the given write function, which is
+// the connection's writePacket or its writePacketDeferred.
+func (ch *channel) writePacketWith(packet []byte, write func([]byte) error) error {
 	ch.writeMu.Lock()
 	if ch.sentClose {
 		ch.writeMu.Unlock()
 		return io.EOF
 	}
 	ch.sentClose = (packet[0] == msgChannelClose)
-	err := ch.mux.conn.writePacket(packet)
+	err := write(packet)
 	ch.writeMu.Unlock()
 	return err
 }
@@ -273,9 +279,25 @@ func (ch *channel) WriteExtended(data []byte, extendedCode uint32) (n int, err e
 	// flagged as errors by the race detector.
 	ch.writeMu.Unlock()
 
+	// The packets of one Write are handed to the connection without a flush
+	// each, and flushed once at the end: a Write of several packets is a few
+	// write calls on the network connection instead of one or more per packet.
+	// A lone packet is flushed at once, when Write returns. The buffer is also
+	// flushed before Write waits for window, because the peer may be waiting
+	// for these very packets before it grants more.
+	write := ch.mux.conn.writePacket
+	var flush func() error
+	if dc, ok := ch.mux.conn.(deferredPacketConn); ok {
+		write, flush = dc.writePacketDeferred, dc.flush
+		defer func() {
+			if ferr := flush(); err == nil {
+				err = ferr
+			}
+		}()
+	}
 	for len(data) > 0 {
 		space := minPayloadSize(ch.maxRemotePayload, len(data))
-		if space, err = ch.remoteWin.reserve(space); err != nil {
+		if space, err = ch.remoteWin.reserveFlushing(space, flush); err != nil {
 			return n, err
 		}
 		if want := headerLength + space; uint32(cap(packet)) < want {
@@ -293,7 +315,7 @@ func (ch *channel) WriteExtended(data []byte, extendedCode uint32) (n int, err e
 		}
 		binary.BigEndian.PutUint32(packet[headerLength-4:], uint32(len(todo)))
 		copy(packet[headerLength:], todo)
-		if err = ch.writePacket(packet); err != nil {
+		if err = ch.writePacketWith(packet, write); err != nil {
 			return n, err
 		}
 
