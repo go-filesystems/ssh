@@ -3,6 +3,10 @@
 Nothing here has been sent upstream. This file is the text and the patch
 outline for an issue and a Gerrit change, to be filed after review.
 
+Base: x/crypto commit 2f1f834330b2 (v0.58.1-0.20261009181718-2f1f834330b2), the
+first to fix GO-2026-5932; its `ssh/` tree equals v0.58.0's. The numbers below
+were measured on v0.58.0's identical code.
+
 ## Problem
 
 Every SSH packet is encrypted into the transport's `bufio.Writer` and flushed
