@@ -20,9 +20,9 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/internal/testenv"
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/testdata"
+	"github.com/go-filesystems/ssh/internal/testenv"
+	"github.com/go-filesystems/ssh"
+	"github.com/go-filesystems/ssh/testdata"
 )
 
 // serverPort contains the port that OpenSSH will listen on. OpenSSH can't take
