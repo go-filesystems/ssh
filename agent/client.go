@@ -28,7 +28,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"golang.org/x/crypto/ssh"
+	"github.com/go-filesystems/ssh"
 )
 
 // SignatureFlags represent additional flags that can be passed to the signature

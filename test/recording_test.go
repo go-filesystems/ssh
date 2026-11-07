@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/sha3"
-	"golang.org/x/crypto/ssh"
+	"github.com/go-filesystems/ssh"
 )
 
 const (
