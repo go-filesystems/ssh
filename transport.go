@@ -179,21 +179,46 @@ func (s *connectionState) readPacket(r *bufio.Reader, strictMode bool) ([]byte, 
 	return fresh, err
 }
 
+// writePacket encrypts the packet and sends it: it is on the wire when
+// writePacket returns.
 func (t *transport) writePacket(packet []byte) error {
+	if err := t.writePacketDeferred(packet); err != nil {
+		return err
+	}
+	return t.flush()
+}
+
+// writePacketDeferred encrypts the packet and appends it to the write buffer,
+// where it stays until [transport.flush] or until the buffer is full. The bytes
+// are the same as with writePacket, in the same order; only the number of
+// write calls on the underlying connection differs. The caller must flush
+// before it waits for anything the peer sends in answer, and at the end of its
+// burst of packets.
+func (t *transport) writePacketDeferred(packet []byte) error {
 	if debugTransport {
 		t.printPacket(packet, true)
 	}
 	return t.writer.writePacket(t.bufWriter, t.rand, packet, t.strictMode)
 }
 
+// flush writes what writePacketDeferred buffered.
+func (t *transport) flush() error {
+	return t.bufWriter.Flush()
+}
+
+// writeBufferSize is the size of the transport's write buffer. It holds a whole
+// channel packet (32 KiB of payload plus headers, MAC or tag, and padding) and
+// then some, so that a packet is not cut in two writes at the 4 KiB bufio.Writer
+// default, and so that a burst of packets leaves in few writes.
+const writeBufferSize = 64 << 10
+
+// writePacket encrypts the packet into w and advances the sequence number. It
+// does not flush w.
 func (s *connectionState) writePacket(w *bufio.Writer, rand io.Reader, packet []byte, strictMode bool) error {
 	changeKeys := len(packet) > 0 && packet[0] == msgNewKeys
 
 	err := s.packetCipher.writeCipherPacket(s.seqNum, w, rand, packet)
 	if err != nil {
-		return err
-	}
-	if err = w.Flush(); err != nil {
 		return err
 	}
 	s.seqNum++
@@ -214,7 +239,7 @@ func (s *connectionState) writePacket(w *bufio.Writer, rand io.Reader, packet []
 func newTransport(rwc io.ReadWriteCloser, rand io.Reader, isClient bool) *transport {
 	t := &transport{
 		bufReader: bufio.NewReader(rwc),
-		bufWriter: bufio.NewWriter(rwc),
+		bufWriter: bufio.NewWriterSize(rwc, writeBufferSize),
 		rand:      rand,
 		reader: connectionState{
 			packetCipher:     &streamPacketCipher{cipher: noneCipher{}},

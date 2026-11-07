@@ -712,11 +712,28 @@ func (w *window) close() {
 // If no capacity remains, reserve will block. reserve may
 // return less than requested.
 func (w *window) reserve(win uint32) (uint32, error) {
+	return w.reserveFlushing(win, nil)
+}
+
+// reserveFlushing is reserve, except that when it has to wait for window it
+// first calls flush (if not nil), without holding the window's lock: the
+// writer may hold packets in a buffer that the peer must receive before it
+// will send the window adjustment being waited for.
+func (w *window) reserveFlushing(win uint32, flush func() error) (uint32, error) {
 	var err error
 	w.L.Lock()
 	w.writeWaiters++
 	w.Broadcast()
 	for w.win == 0 && !w.closed {
+		if flush != nil {
+			w.L.Unlock()
+			// A failure of the connection is reported by the write that
+			// follows; here the wait ends when the window is closed.
+			flush()
+			w.L.Lock()
+			flush = nil
+			continue
+		}
 		w.Wait()
 	}
 	w.writeWaiters--

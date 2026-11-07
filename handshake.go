@@ -576,7 +576,59 @@ func (t *handshakeTransport) sendKexInit() error {
 
 var errSendBannerPhase = errors.New("ssh: SendAuthBanner outside of authentication phase")
 
+// deferredPacketConn is a packetConn that can hold packets in a write buffer
+// until told to flush (see [transport.writePacketDeferred]). A connection that
+// is not one is simply written packet by packet.
+type deferredPacketConn interface {
+	packetConn
+	// writePacketDeferred is writePacket without the guarantee that the packet
+	// is on the wire when it returns; flush gives it.
+	writePacketDeferred(packet []byte) error
+	flush() error
+}
+
+// writePacketDeferred is writePacket for a caller that is writing several
+// packets in a row and will call flush after the last one (and before it waits
+// for anything the peer sends in answer). Everything else about the packet is
+// as in writePacket: ordering under the lock, the rekeying counters, and the
+// queueing of packets while a key exchange is in progress, which are written,
+// and flushed, by the key exchange as before.
+func (t *handshakeTransport) writePacketDeferred(p []byte) error {
+	return t.write(p, true)
+}
+
+// flush puts on the wire the packets writePacketDeferred left in the buffer.
+// Like a write, it holds the lock, and a failure is remembered.
+func (t *handshakeTransport) flush() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.writeError != nil {
+		return t.writeError
+	}
+	if t.sentInitMsg != nil {
+		// A key exchange is in progress and owns the connection: it writes
+		// without this lock, and everything written meanwhile is queued. Our
+		// KEXINIT was flushed with whatever was in the buffer before it
+		// (RFC 4253 section 7: it is sent at once), so there is nothing left
+		// to flush here, and touching the buffer would race the exchange.
+		return nil
+	}
+	if dc, ok := t.conn.(deferredPacketConn); ok {
+		if err := dc.flush(); err != nil {
+			t.writeError = err
+			t.writeCond.Broadcast()
+			return err
+		}
+	}
+	return nil
+}
+
 func (t *handshakeTransport) writePacket(p []byte) error {
+	return t.write(p, false)
+}
+
+// write sends p. With deferred set the packet may stay in the write buffer.
+func (t *handshakeTransport) write(p []byte, deferred bool) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -626,7 +678,16 @@ func (t *handshakeTransport) writePacket(p []byte) error {
 		t.requestKeyExchange()
 	}
 
-	if err := t.pushPacket(p); err != nil {
+	push := t.pushPacket
+	if dc, ok := t.conn.(deferredPacketConn); ok && deferred {
+		push = func(p []byte) error {
+			if debugHandshake {
+				t.printPacket(p, true)
+			}
+			return dc.writePacketDeferred(p)
+		}
+	}
+	if err := push(p); err != nil {
 		t.writeError = err
 		t.writeCond.Broadcast()
 	}
