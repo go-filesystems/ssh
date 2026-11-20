@@ -1,6 +1,6 @@
 module internal/poly1305/_asm
 
-go 1.26.0
+go 1.27.4
 
 require (
 	github.com/mmcloughlin/avo v0.6.0
